@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"iter"
 	"log"
 	"net/http"
 	"os"
@@ -241,45 +242,73 @@ func rewriteHeadingLinks(doc *markdown.Document) {
 	if len(slugs) == 0 {
 		return
 	}
-	var updateInlines func(markdown.Inlines)
-	updateInlines = func(inlines markdown.Inlines) {
+	for link := range docLinks(doc) {
+		if u, ok := slugs[link.URL]; ok {
+			link.URL = u
+		}
+	}
+}
+
+func docLinks(doc *markdown.Document) iter.Seq[*markdown.Link] {
+	var walkLinks func(markdown.Inlines, func(*markdown.Link) bool) bool
+	walkLinks = func(inlines markdown.Inlines, yield func(*markdown.Link) bool) bool {
 		for _, inl := range inlines {
 			switch ent := inl.(type) {
 			case *markdown.Strong:
-				updateInlines(ent.Inner)
+				if !walkLinks(ent.Inner, yield) {
+					return false
+				}
 			case *markdown.Emph:
-				updateInlines(ent.Inner)
+				if !walkLinks(ent.Inner, yield) {
+					return false
+				}
 			case *markdown.Link:
-				if u, ok := slugs[ent.URL]; ok {
-					ent.URL = u
+				if !yield(ent) {
+					return false
 				}
 			}
 		}
+		return true
 	}
-
-	var walkBlocks func(markdown.Block)
-	walkBlocks = func(block markdown.Block) {
+	var walkBlocks func(markdown.Block, func(*markdown.Link) bool) bool
+	walkBlocks = func(block markdown.Block, yield func(*markdown.Link) bool) bool {
 		switch bl := block.(type) {
 		case *markdown.Item:
 			for _, b := range bl.Blocks {
-				walkBlocks(b)
+				if !walkBlocks(b, yield) {
+					return false
+				}
 			}
 		case *markdown.List:
 			for _, b := range bl.Items {
-				walkBlocks(b)
+				if !walkBlocks(b, yield) {
+					return false
+				}
 			}
 		case *markdown.Paragraph:
-			updateInlines(bl.Text.Inline)
+			if !walkLinks(bl.Text.Inline, yield) {
+				return false
+			}
 		case *markdown.Quote:
 			for _, b := range bl.Blocks {
-				walkBlocks(b)
+				if !walkBlocks(b, yield) {
+					return false
+				}
 			}
 		case *markdown.Text:
-			updateInlines(bl.Inline)
+			if !walkLinks(bl.Inline, yield) {
+				return false
+			}
 		}
+		return true
 	}
-	for _, b := range doc.Blocks {
-		walkBlocks(b)
+
+	return func(yield func(*markdown.Link) bool) {
+		for _, b := range doc.Blocks {
+			if !walkBlocks(b, yield) {
+				return
+			}
+		}
 	}
 }
 
