@@ -26,6 +26,7 @@ func main() {
 	commands := []subcommand{
 		{name: "get", fn: handleGet, desc: "download a single document"},
 		{name: "update", fn: handleUpdate, desc: "replace document with a content from file"},
+		{name: "search", fn: handleSearch, desc: "search for documents"},
 	}
 	usage := func() {
 		w := flag.CommandLine.Output()
@@ -131,6 +132,55 @@ func handleGet(ctx context.Context, token authToken, cliargs []string) error {
 	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "# %s\n\n", res.Data.Title)
 	fmt.Fprintln(&buf, res.Data.Text)
+	if dstFile != "" && dstFile != "-" {
+		return os.WriteFile(dstFile, buf.Bytes(), 0666)
+	}
+	_, err := os.Stdout.Write(buf.Bytes())
+	return err
+}
+
+func handleSearch(ctx context.Context, token authToken, cliargs []string) error {
+	var dstFile string
+	limit := 25
+	offset := 0
+	status := "published"
+	fs := flag.NewFlagSet("", flag.ExitOnError)
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(), "Usage: %s search [flags] query\n", exeName)
+		fs.PrintDefaults()
+	}
+	fs.StringVar(&dstFile, "o", dstFile, "file to save result to, if not set, it will be printed to stdout")
+	fs.IntVar(&limit, "limit", limit, "maximum number of results to return")
+	fs.IntVar(&offset, "offset", offset, "number of results to skip")
+	fs.StringVar(&status, "status", status, "document status to filter by (published, draft, archived)")
+	fs.Parse(cliargs)
+	if fs.NArg() == 0 {
+		return errors.New("no query")
+	}
+	query := strings.Join(fs.Args(), " ")
+	req := struct {
+		Limit  int      `json:"limit"`
+		Offset int      `json:"offset"`
+		Query  string   `json:"query"`
+		Status []string `json:"statusFilter"`
+	}{Limit: limit, Offset: offset, Query: query, Status: []string{status}}
+	var res struct {
+		Data []struct {
+			Context  string `json:"context"`
+			Document struct {
+				Title string `json:"title"`
+				UrlID string `json:"urlId"`
+			} `json:"document"`
+		} `json:"data"`
+	}
+	if err := doApiRequest(ctx, req, &res, token, "https://app.getoutline.com/api/documents.search"); err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf, "%d results\n\n", len(res.Data))
+	for _, item := range res.Data {
+		fmt.Fprintf(&buf, "# %s\nURL ID: `%s`\nContext: %s\n\n", item.Document.Title, item.Document.UrlID, item.Context)
+	}
 	if dstFile != "" && dstFile != "-" {
 		return os.WriteFile(dstFile, buf.Bytes(), 0666)
 	}
